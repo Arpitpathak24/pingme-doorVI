@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Visitor Video Call</title>
+  <style>
+    body { font-family: Arial; text-align: center; margin-top: 40px; }
+    video { width: 80%; max-width: 600px; border: 2px solid #333; margin-top: 20px; }
+    #start-btn { padding: 10px 20px; font-size: 18px; margin-top: 20px; cursor: pointer; }
+    #status { margin-top: 20px; font-size: 18px; }
+  </style>
+</head>
+<body>
+  <h1>Visitor</h1>
+  <div id="status">Ready to start call</div>
+  <button id="start-btn">Start Call</button><br>
+  <video id="local-video" autoplay muted playsinline></video>
+  <video id="remote-video" autoplay playsinline></video>
+
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
+
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyA6IjdDQQVCHBJUnPL3QOSzGcCfFDQL8N8",
+      authDomain: "doorvi-fd448.firebaseapp.com",
+      databaseURL: "https://doorvi-fd448-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "doorvi-fd448",
+      storageBucket: "doorvi-fd448.appspot.com",
+      messagingSenderId: "729555558141",
+      appId: "1:729555558141:web:ba84abd16b319ad6526894"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+    const connectionsRef = db.ref("connections");
+
+    const startBtn = document.getElementById("start-btn");
+    const localVideo = document.getElementById("local-video");
+    const remoteVideo = document.getElementById("remote-video");
+    const statusDiv = document.getElementById("status");
+
+    let peerConnection;
+    let localStream;
+    let candidateQueue = []; // Queue for ICE candidates
+
+    const iceServersConfig = {
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        {
+          urls: "turn:relay.metered.ca:443",
+          username: "openai",
+          credential: "openai123"
+        }
+      ]
+    };
+
+    async function startCall() {
+      try {
+        statusDiv.textContent = "Accessing camera and mic...";
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        localVideo.srcObject = localStream;
+
+        peerConnection = new RTCPeerConnection(iceServersConfig);
+
+        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+        peerConnection.ontrack = (e) => {
+          remoteVideo.srcObject = e.streams[0];
+          statusDiv.textContent = "Connected!";
+        };
+
+        peerConnection.onicecandidate = (e) => {
+          if (e.candidate) {
+            if (peerConnection.remoteDescription) {
+              // If remote description is set, send ICE candidate immediately
+              connectionsRef.push({ type: "candidate", candidate: e.candidate.toJSON() });
+            } else {
+              // Otherwise, queue the ICE candidate for later
+              candidateQueue.push(e.candidate.toJSON());
+            }
+          }
+        };
+
+        peerConnection.onconnectionstatechange = () => {
+          if (["disconnected", "failed", "closed"].includes(peerConnection.connectionState)) {
+            statusDiv.textContent = "Call ended.";
+            connectionsRef.remove();
+            if (peerConnection) peerConnection.close();
+          }
+        };
+
+        // Remove old connections if any
+        await connectionsRef.remove();
+
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        connectionsRef.push({ type: "offer", offer: { type: offer.type, sdp: offer.sdp } });
+
+        statusDiv.textContent = "Waiting for resident to accept...";
+      } catch (err) {
+        console.error(err);
+        statusDiv.textContent = "Error accessing camera/mic.";
+      }
+    }
+
+    connectionsRef.on("child_added", async (snapshot) => {
+      const data = snapshot.val();
+
+      if (data.type === "answer" && !peerConnection.currentRemoteDescription) {
+        // When the answer is received, set the remote description
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+        statusDiv.textContent = "Answer received. Connecting...";
+
+        // Apply any queued ICE candidates
+        for (const candidate of candidateQueue) {
+          try {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+          } catch (err) {
+            console.warn("Error adding queued ICE candidate:", err);
+          }
+        }
+        candidateQueue = []; // Clear the queue after applying candidates
+      } else if (data.type === "candidate") {
+        // Handle ICE candidate
+        if (peerConnection.remoteDescription) {
+          // If remote description is set, apply candidate
+          try {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+          } catch (err) {
+            console.warn("Error adding ICE candidate:", err);
+          }
+        } else {
+          // Queue the ICE candidate until the remote description is set
+          candidateQueue.push(data.candidate);
+        }
+      }
+    });
+
+    startBtn.onclick = startCall;
+  </script>
+</body>
+</html>

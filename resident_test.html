@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Resident Video Call</title>
+  <style>
+    body { font-family: Arial; text-align: center; margin-top: 40px; }
+    video { width: 80%; max-width: 600px; border: 2px solid #333; margin-top: 20px; }
+    #accept-btn, #end-btn {
+      display: none; padding: 10px 20px; font-size: 18px;
+      margin-top: 20px; cursor: pointer;
+    }
+    #status { margin-top: 20px; font-size: 18px; }
+  </style>
+</head>
+<body>
+  <h1>Resident</h1>
+  <div id="status">Waiting for visitor...</div>
+  <button id="accept-btn">Accept Call</button>
+  <button id="end-btn">End Call</button>
+  <video id="local-video" autoplay muted playsinline></video>
+  <video id="remote-video" autoplay playsinline></video>
+
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
+
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyA6IjdDQQVCHBJUnPL3QOSzGcCfFDQL8N8",
+      authDomain: "doorvi-fd448.firebaseapp.com",
+      databaseURL: "https://doorvi-fd448-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "doorvi-fd448",
+      storageBucket: "doorvi-fd448.appspot.com",
+      messagingSenderId: "729555558141",
+      appId: "1:729555558141:web:ba84abd16b319ad6526894"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+    const connectionsRef = db.ref("connections");
+
+    const acceptBtn = document.getElementById("accept-btn");
+    const endBtn = document.getElementById("end-btn");
+    const localVideo = document.getElementById("local-video");
+    const remoteVideo = document.getElementById("remote-video");
+    const statusDiv = document.getElementById("status");
+
+    let peerConnection;
+    let localStream;
+    let isCallAnswered = false;
+    let pendingOffer = null;
+
+    const iceServersConfig = {
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        {
+          urls: "turn:relay.metered.ca:443",
+          username: "openai",
+          credential: "openai123"
+        }
+      ]
+    };
+
+    async function showLocalPreview() {
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        localVideo.srcObject = localStream;
+      } catch (err) {
+        console.error("Media error:", err);
+        statusDiv.textContent = "Camera/mic permission denied.";
+      }
+    }
+
+    async function handleOffer(data) {
+      if (isCallAnswered) return;
+
+      statusDiv.textContent = "Incoming call...";
+      acceptBtn.style.display = "inline-block";
+      pendingOffer = data.offer;
+    }
+
+    acceptBtn.onclick = async () => {
+      if (!pendingOffer) return;
+
+      isCallAnswered = true;
+      acceptBtn.style.display = "none";
+      endBtn.style.display = "inline-block";
+      statusDiv.textContent = "Connecting...";
+
+      peerConnection = new RTCPeerConnection(iceServersConfig);
+
+      localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+      peerConnection.ontrack = (e) => {
+        remoteVideo.srcObject = e.streams[0];
+        statusDiv.textContent = "Connected!";
+      };
+
+      peerConnection.onicecandidate = (e) => {
+        if (e.candidate) {
+          connectionsRef.push({ type: "candidate", candidate: e.candidate.toJSON() });
+        }
+      };
+
+      peerConnection.onconnectionstatechange = () => {
+        if (["disconnected", "failed", "closed"].includes(peerConnection.connectionState)) endCall();
+      };
+
+      await peerConnection.setRemoteDescription(new RTCSessionDescription(pendingOffer));
+      const answer = await peerConnection.createAnswer();
+      await peerConnection.setLocalDescription(answer);
+      connectionsRef.push({ type: "answer", answer: { type: answer.type, sdp: answer.sdp } });
+    };
+
+    endBtn.onclick = endCall;
+
+    function endCall() {
+      if (peerConnection) peerConnection.close();
+      peerConnection = null;
+      remoteVideo.srcObject = null;
+      isCallAnswered = false;
+      pendingOffer = null;
+      endBtn.style.display = "none";
+      statusDiv.textContent = "Call ended. Waiting...";
+      connectionsRef.remove();
+    }
+
+    connectionsRef.on("child_added", (snapshot) => {
+      const data = snapshot.val();
+      if (data.type === "offer") handleOffer(data);
+      else if (data.type === "candidate" && peerConnection) {
+        peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+      }
+    });
+
+    showLocalPreview();
+  </script>
+</body>
+</html>
