@@ -22,8 +22,10 @@
   <video id="local-video" autoplay muted playsinline></video>
   <video id="remote-video" autoplay playsinline></video>
 
+  <!-- Firebase SDKs -->
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-messaging-compat.js"></script>
 
   <script>
     const firebaseConfig = {
@@ -39,6 +41,7 @@
     firebase.initializeApp(firebaseConfig);
     const db = firebase.database();
     const connectionsRef = db.ref("connections");
+    const messaging = firebase.messaging();
 
     const acceptBtn = document.getElementById("accept-btn");
     const endBtn = document.getElementById("end-btn");
@@ -78,6 +81,13 @@
       statusDiv.textContent = "Incoming call...";
       acceptBtn.style.display = "inline-block";
       pendingOffer = data.offer;
+
+      if (Notification.permission === "granted") {
+        new Notification("PingMe - Incoming Call", {
+          body: "A visitor is calling you!",
+          icon: "https://img.icons8.com/color/96/video-call.png"
+        });
+      }
     }
 
     acceptBtn.onclick = async () => {
@@ -89,7 +99,6 @@
       statusDiv.textContent = "Connecting...";
 
       peerConnection = new RTCPeerConnection(iceServersConfig);
-
       localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
       peerConnection.ontrack = (e) => {
@@ -133,6 +142,48 @@
         peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
       }
     });
+
+    // 🔔 Firebase Cloud Messaging Integration
+    async function initFCM() {
+      try {
+        const permission = await Notification.requestPermission();
+        if (permission !== "granted") {
+          console.warn("Notification permission denied.");
+          return;
+        }
+
+        const currentToken = await messaging.getToken({
+          vapidKey: "BO2qvtwyQnde823O4h4lQ2CvZoyD868YGYZFy52NueKNlqIiXPbD39ccR0ckANahCshwVu3P_PTqbPO9RndWGhw"
+        });
+
+        if (currentToken) {
+          console.log("✅ FCM Token:", currentToken);
+          firebase.database().ref("fcm_tokens/resident123").set({
+            token: currentToken,
+            updatedAt: new Date().toISOString()
+          });
+        } else {
+          console.warn("No FCM token available.");
+        }
+      } catch (error) {
+        console.error("FCM Error:", error);
+      }
+    }
+
+    messaging.onMessage((payload) => {
+      console.log("📩 FCM Foreground Message:", payload);
+      const { title, body } = payload.notification;
+      new Notification(title, { body });
+    });
+
+    // Register service worker and initialize FCM
+    navigator.serviceWorker.register('/firebase-messaging-sw.js')
+      .then(() => {
+        console.log('✅ Service Worker registered.');
+        initFCM();
+      }).catch((err) => {
+        console.error("❌ Service Worker registration failed:", err);
+      });
 
     showLocalPreview();
   </script>
